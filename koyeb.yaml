@@ -1,0 +1,26 @@
+# Koyeb deployment config for XERO Bot
+# This file is optional - settings can also be done in the Koyeb dashboard
+
+services:
+  - name: xero-bot
+    type: worker          # worker = no HTTP, runs forever - perfect for Discord bots
+    docker:
+      dockerfile: Dockerfile
+    instance_types: free
+    regions:
+      - was               # Washington DC - low latency for Discord
+    scaling:
+      min: 1
+      max: 1
+    env:
+      # These are placeholders - set real values in Koyeb dashboard as secrets
+      - key: DISCORD_TOKEN
+        value: ""
+      - key: MANAGEMENT_GUILD_ID
+        value: ""
+      - key: NVIDIA_MAIN_KEY
+        value: ""
+      - key: NVIDIA_VISION_KEY
+        value: ""
+      - key: NVIDIA_AUDIO_KEY
+        value: ""

@@ -1,32 +1,43 @@
-# xero-bot
+# XERO Bot
 
-A bot for automating tasks with the Xero API.
+A full-featured Discord bot built by Team Flame.
 
-## Prerequisites
-- Node.js installed
+**385 slash commands across 46 cogs.**
+
+## Features
+
+- 🤖 **AI** — NVIDIA Nemotron-3-Super 120B, vision AI, voice AI (STT + TTS)
+- 📊 **Leveling** — XP, leaderboards, role rewards, level-up cards
+- 💰 **Economy** — wallet, bank, shop, heists, stocks, crafting
+- 🛡️ **Moderation** — cases, warnings, tempban, smart mod, automod, anti-nuke
+- 🎫 **Tickets** — full event logging, AI case summaries, staff intelligence brief
+- 🎉 **Giveaways** — advanced entry, role multipliers, auto-reroll
+- 🎵 **Music** — yt-dlp powered, queue, filters
+- 👋 **Welcome** — Pillow image cards, DM support, custom overlays
+- 🧠 **Member Intelligence** — passive skill/interest graph, always-on personality AI
+- ⚙️ **Management Dashboard** — 8-panel black/white/baby-blue HR control panel
 
 ## Setup
-1. Clone the repository:
+
 ```bash
-git clone https://github.com/kushwork1209-prog/xero-bot.git
-cd xero-bot
-```
-2. Install dependencies:
-```bash
-npm install
-```
-3. Create a `.env` file in the root directory and add your Xero API credentials:
-```
-CLIENT_ID='your client id'
-CLIENT_SECRET='your client secret'
-REDIRECT_URI='your redirect uri'
+pip install -r requirements.txt
+cp .env.example .env
+# Fill in .env
+python main.py
 ```
 
-## Development
-To start the server:
-```bash
-node index.js
+## Environment Variables
+
+```
+DISCORD_TOKEN=
+MANAGEMENT_GUILD_ID=
+NVIDIA_MAIN_KEY=
+NVIDIA_VISION_KEY=
+NVIDIA_AUDIO_KEY=
 ```
 
-## License
-This project is licensed under the MIT License.
+## Commands
+
+Run `/help` in Discord for the full command list.
+Management staff: `/core dashboard` in the management server.
+ 

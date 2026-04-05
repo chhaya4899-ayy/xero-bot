@@ -1,0 +1,25 @@
+# XERO Bot — Fly.io config
+app = "xero-bot"
+primary_region = "iad"
+
+[build]
+
+[env]
+  # Non-secret env vars go here
+  # Secret keys go in: fly secrets set KEY=value
+
+[[services]]
+  # Discord bots don't need HTTP — this just keeps the VM alive
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[checks]
+  # No HTTP health check needed for a bot
+
+[vm]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

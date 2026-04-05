@@ -1,0 +1,435 @@
+"""NEXUS Bot — Utility Commands (16 commands)"""
+import discord
+from discord.ext import commands
+from discord import app_commands
+import logging
+import time
+import datetime
+import platform
+import psutil
+import os
+import urllib.parse
+from utils.embeds import success_embed, error_embed, info_embed, comprehensive_embed, warning_embed
+
+logger = logging.getLogger("NEXUS.Utility")
+
+
+class Utility(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="ping", description="Check bot latency, API response, and system performance.")
+    async def ping(self, interaction: discord.Interaction):
+        latency = round(self.bot.latency * 1000)
+        uptime = time.time() - self.bot.launch_time
+        uptime_str = f"{int(uptime//86400)}d {int((uptime%86400)//3600)}h {int((uptime%3600)//60)}m"
+        try:
+            proc = psutil.Process(os.getpid())
+            mem = proc.memory_info().rss / 1024 / 1024
+            cpu = proc.cpu_percent(interval=0.1)
+        except Exception:
+            mem, cpu = 0, 0
+        rating = "🟢 Excellent" if latency < 80 else ("🟡 Good" if latency < 150 else "🔴 High")
+        embed = comprehensive_embed(title="🏓 NEXUS Performance Dashboard", color=discord.Color.blurple())
+        embed.add_field(name="⚡ Latency", value=f"**{latency}ms** {rating}", inline=True)
+        embed.add_field(name="📡 API", value=f"**{round(self.bot.latency * 1000)}ms**", inline=True)
+        embed.add_field(name="💾 Memory", value=f"**{mem:.1f} MB**", inline=True)
+        embed.add_field(name="🖥️ CPU", value=f"**{cpu:.1f}%**", inline=True)
+        embed.add_field(name="⏱️ Uptime", value=f"**{uptime_str}**", inline=True)
+        embed.add_field(name="🌐 Servers", value=f"**{len(self.bot.guilds):,}**", inline=True)
+        embed.set_footer(text="NEXUS Bot | All systems nominal")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="userinfo", description="Get comprehensive information about a user or yourself.")
+    @app_commands.describe(user="User to get info about")
+    async def userinfo(self, interaction: discord.Interaction, user: discord.Member = None):
+        target = user or interaction.user
+        data = await self.bot.db.get_level(target.id, interaction.guild.id)
+        eco = await self.bot.db.get_economy(target.id, interaction.guild.id)
+        stats = await self.bot.db.get_user_stats(target.id, interaction.guild.id)
+        warns = await self.bot.db.get_warnings(interaction.guild.id, target.id)
+        badges = []
+        if target.id == interaction.guild.owner_id: badges.append("👑 Server Owner")
+        if target.guild_permissions.administrator: badges.append("🛡️ Administrator")
+        if target.bot: badges.append("🤖 Bot")
+        if target.premium_since: badges.append("💎 Server Booster")
+        embed = comprehensive_embed(
+            title=f"👤 {target.display_name}",
+            description=" | ".join(badges) if badges else None,
+            color=target.color if target.color.value != 0 else discord.Color.blurple(),
+            thumbnail_url=target.display_avatar.url
+        )
+        embed.add_field(name="📝 Account", value=(
+            f"**Username:** {target}\n"
+            f"**ID:** `{target.id}`\n"
+            f"**Created:** <t:{int(target.created_at.timestamp())}:R>"
+        ), inline=True)
+        embed.add_field(name="🏠 Server", value=(
+            f"**Joined:** <t:{int(target.joined_at.timestamp())}:R>\n"
+            f"**Top Role:** {target.top_role.mention}\n"
+            f"**Roles:** {len(target.roles)-1}"
+        ), inline=True)
+        embed.add_field(name="📊 Stats", value=(
+            f"**Level:** {data.get('level', 0)} | **XP:** {data.get('total_xp', 0):,}\n"
+            f"**Balance:** ${eco.get('wallet', 0) + eco.get('bank', 0):,}\n"
+            f"**Warnings:** {len(warns)}"
+        ), inline=True)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="serverinfo", description="Get comprehensive information about this server.")
+    async def serverinfo(self, interaction: discord.Interaction):
+        g = interaction.guild
+        text_ch = len([c for c in g.channels if isinstance(c, discord.TextChannel)])
+        voice_ch = len([c for c in g.channels if isinstance(c, discord.VoiceChannel)])
+        humans = sum(1 for m in g.members if not m.bot)
+        bots = sum(1 for m in g.members if m.bot)
+        embed = comprehensive_embed(
+            title=f"🏰 {g.name}",
+            description=g.description or "No description",
+            color=discord.Color.blurple(),
+            thumbnail_url=g.icon.url if g.icon else None
+        )
+        embed.add_field(name="📋 Info", value=(
+            f"**ID:** `{g.id}`\n"
+            f"**Owner:** {g.owner.mention}\n"
+            f"**Created:** <t:{int(g.created_at.timestamp())}:R>"
+        ), inline=True)
+        embed.add_field(name="👥 Members", value=(
+            f"**Total:** {g.member_count:,}\n"
+            f"**Humans:** {humans:,}\n"
+            f"**Bots:** {bots:,}"
+        ), inline=True)
+        embed.add_field(name="📡 Channels", value=(
+            f"**Text:** {text_ch}\n"
+            f"**Voice:** {voice_ch}\n"
+            f"**Categories:** {len(g.categories)}"
+        ), inline=True)
+        embed.add_field(name="🎨 Assets", value=(
+            f"**Roles:** {len(g.roles)-1}\n"
+            f"**Emojis:** {len(g.emojis)}\n"
+            f"**Stickers:** {len(g.stickers)}"
+        ), inline=True)
+        embed.add_field(name="🔒 Security", value=(
+            f"**Verification:** {g.verification_level.name.replace('_',' ').title()}\n"
+            f"**MFA:** {'Required' if g.mfa_level else 'Not Required'}\n"
+            f"**NSFW:** {g.nsfw_level.name.replace('_',' ').title()}"
+        ), inline=True)
+        embed.add_field(name="⭐ Boosts", value=(
+            f"**Level:** {g.premium_tier}\n"
+            f"**Boosts:** {g.premium_subscription_count}\n"
+            f"**Bitrate Limit:** {g.bitrate_limit//1000}kbps"
+        ), inline=True)
+        if g.banner:
+            embed.set_image(url=g.banner.url)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="avatar", description="Get a user's avatar in all formats and sizes.")
+    @app_commands.describe(user="User to get avatar of")
+    async def avatar(self, interaction: discord.Interaction, user: discord.User = None):
+        target = user or interaction.user
+        av = target.display_avatar
+        embed = comprehensive_embed(title=f"🖼️ {target.display_name}'s Avatar", color=discord.Color.blurple())
+        embed.set_image(url=av.url)
+        embed.add_field(name="Download Links", value=(
+            f"[PNG (1024px)]({av.url}?size=1024&format=png) | "
+            f"[PNG (2048px)]({av.url}?size=2048&format=png) | "
+            f"[WebP]({av.url}?size=1024&format=webp)"
+        ), inline=False)
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Download Full Size", url=f"{av.url}?size=4096", style=discord.ButtonStyle.link))
+        await interaction.response.send_message(embed=embed, view=view)
+
+    @app_commands.command(name="banner", description="Get a user's profile banner.")
+    @app_commands.describe(user="User to get banner of")
+    async def banner(self, interaction: discord.Interaction, user: discord.User = None):
+        target = user or interaction.user
+        fetched = await self.bot.fetch_user(target.id)
+        if not fetched.banner:
+            return await interaction.response.send_message(embed=error_embed("No Banner", f"**{target}** doesn't have a profile banner."), ephemeral=True)
+        embed = comprehensive_embed(title=f"🎨 {target.display_name}'s Banner", color=discord.Color.blurple())
+        embed.set_image(url=fetched.banner.url)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="roleinfo", description="Get detailed information about a role.")
+    @app_commands.describe(role="Role to inspect")
+    async def roleinfo(self, interaction: discord.Interaction, role: discord.Role):
+        key_perms = [p.replace("_", " ").title() for p, v in role.permissions if v and p not in ("read_messages", "read_message_history", "view_channel")]
+        embed = comprehensive_embed(title=f"🎭 Role: {role.name}", color=role.color if role.color.value else discord.Color.blurple())
+        embed.add_field(name="📋 Info", value=(
+            f"**ID:** `{role.id}`\n"
+            f"**Created:** <t:{int(role.created_at.timestamp())}:R>\n"
+            f"**Position:** {role.position}"
+        ), inline=True)
+        embed.add_field(name="🎨 Style", value=(
+            f"**Color:** `{role.color}`\n"
+            f"**Hoisted:** {'Yes' if role.hoist else 'No'}\n"
+            f"**Mentionable:** {'Yes' if role.mentionable else 'No'}"
+        ), inline=True)
+        embed.add_field(name="👥 Members", value=f"**{len(role.members):,}** members", inline=True)
+        if key_perms:
+            embed.add_field(name="🔑 Key Permissions", value=", ".join(key_perms[:15]) + ("..." if len(key_perms) > 15 else ""), inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="channelinfo", description="Get detailed information about a channel.")
+    @app_commands.describe(channel="Channel to inspect")
+    async def channelinfo(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        ch = channel or interaction.channel
+        embed = comprehensive_embed(title=f"💬 #{ch.name}", color=discord.Color.blurple())
+        embed.add_field(name="📋 Info", value=(
+            f"**ID:** `{ch.id}`\n"
+            f"**Category:** {ch.category.name if ch.category else 'None'}\n"
+            f"**Created:** <t:{int(ch.created_at.timestamp())}:R>"
+        ), inline=True)
+        embed.add_field(name="⚙️ Settings", value=(
+            f"**Slowmode:** {ch.slowmode_delay}s\n"
+            f"**NSFW:** {'Yes' if ch.is_nsfw() else 'No'}\n"
+            f"**Position:** {ch.position}"
+        ), inline=True)
+        if ch.topic:
+            embed.add_field(name="📝 Topic", value=ch.topic[:1024], inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="botinfo", description="View comprehensive information about NEXUS.")
+    async def botinfo(self, interaction: discord.Interaction):
+        uptime = time.time() - self.bot.launch_time
+        uptime_str = f"{int(uptime//86400)}d {int((uptime%86400)//3600)}h {int((uptime%3600)//60)}m"
+        cmds = len([c for c in self.bot.tree.get_commands()])
+        embed = comprehensive_embed(title="🤖 NEXUS Bot", description="Advanced AI-Powered Discord Bot", color=discord.Color.blurple(), thumbnail_url=self.bot.user.display_avatar.url)
+        embed.add_field(name="📛 Name", value="**NEXUS**", inline=True)
+        embed.add_field(name="👑 Creator", value="**Team Flame**", inline=True)
+        embed.add_field(name="🔧 Version", value="**2.0.0**", inline=True)
+        embed.add_field(name="🤖 AI Engine", value="**NVIDIA Llama 4 Maverick**", inline=True)
+        embed.add_field(name="📚 Commands", value=f"**220+** slash commands", inline=True)
+        embed.add_field(name="⏱️ Uptime", value=f"**{uptime_str}**", inline=True)
+        embed.add_field(name="🌐 Servers", value=f"**{len(self.bot.guilds):,}**", inline=True)
+        embed.add_field(name="👥 Users", value=f"**{sum(g.member_count for g in self.bot.guilds):,}**", inline=True)
+        embed.add_field(name="⚡ Latency", value=f"**{round(self.bot.latency*1000)}ms**", inline=True)
+        embed.add_field(name="🐍 Python", value=f"**{platform.python_version()}**", inline=True)
+        embed.add_field(name="📦 discord.py", value=f"**{discord.__version__}**", inline=True)
+        embed.set_footer(text="NEXUS | Premium features, 100% free.")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="remind", description="Set a reminder for yourself.")
+    @app_commands.describe(message="What to remind you about", minutes="Minutes from now (max 10080 = 1 week)")
+    async def remind(self, interaction: discord.Interaction, message: str, minutes: int = 10):
+        minutes = max(1, min(10080, minutes))
+        remind_at = (datetime.datetime.now() + datetime.timedelta(minutes=minutes)).isoformat()
+        rid = await self.bot.db.add_reminder(interaction.user.id, interaction.channel.id, message, remind_at)
+        hrs = minutes // 60
+        mins = minutes % 60
+        time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
+        await interaction.response.send_message(embed=success_embed("Reminder Set! ⏰", f"I'll remind you about:\n**{message}**\n\nIn **{time_str}** (Reminder #{rid})"), ephemeral=True)
+
+    @app_commands.command(name="poll", description="Create an interactive poll with up to 4 options.")
+    @app_commands.describe(question="Poll question", option1="First option", option2="Second option", option3="Third option (optional)", option4="Fourth option (optional)")
+    async def poll(self, interaction: discord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None):
+        options = [opt for opt in [option1, option2, option3, option4] if opt]
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+        embed = discord.Embed(title=f"📊 Poll: {question}", color=discord.Color.blurple())
+        for i, opt in enumerate(options):
+            embed.add_field(name=f"{number_emojis[i]} Option {i+1}", value=opt, inline=False)
+        embed.set_footer(text=f"Poll created by {interaction.user.display_name}")
+        msg = await interaction.channel.send(embed=embed)
+        for i in range(len(options)):
+            await msg.add_reaction(number_emojis[i])
+        await interaction.response.send_message(embed=success_embed("Poll Created!", "Your poll has been posted."), ephemeral=True)
+
+    @app_commands.command(name="afk", description="Set yourself as AFK. The bot will notify others who ping you.")
+    @app_commands.describe(reason="Reason for being AFK")
+    async def afk(self, interaction: discord.Interaction, reason: str = "AFK"):
+        await self.bot.db.set_afk(interaction.user.id, interaction.guild.id, reason)
+        await interaction.response.send_message(embed=info_embed("AFK Set", f"You are now AFK: **{reason}**\nYour AFK will be removed when you send a message."))
+
+    @app_commands.command(name="timestamp", description="Convert a time to Discord timestamp format.")
+    @app_commands.describe(year="Year", month="Month (1-12)", day="Day", hour="Hour (0-23, UTC)", minute="Minute (0-59)")
+    async def timestamp(self, interaction: discord.Interaction, year: int, month: int, day: int, hour: int = 0, minute: int = 0):
+        try:
+            dt = datetime.datetime(year, month, day, hour, minute, tzinfo=datetime.timezone.utc)
+            ts = int(dt.timestamp())
+            formats = {
+                "Short Time": (f"<t:{ts}:t>", f"`<t:{ts}:t>`"),
+                "Long Time": (f"<t:{ts}:T>", f"`<t:{ts}:T>`"),
+                "Short Date": (f"<t:{ts}:d>", f"`<t:{ts}:d>`"),
+                "Long Date": (f"<t:{ts}:D>", f"`<t:{ts}:D>`"),
+                "Full Date+Time": (f"<t:{ts}:f>", f"`<t:{ts}:f>`"),
+                "Relative": (f"<t:{ts}:R>", f"`<t:{ts}:R>`"),
+            }
+            embed = info_embed("🕐 Discord Timestamp", f"**Unix:** `{ts}`")
+            for fmt_name, (display, code) in formats.items():
+                embed.add_field(name=fmt_name, value=f"{display}\n{code}", inline=True)
+            await interaction.response.send_message(embed=embed)
+        except ValueError:
+            await interaction.response.send_message(embed=error_embed("Invalid Date", "Please enter a valid date and time."), ephemeral=True)
+
+    @app_commands.command(name="calc", description="Evaluate a mathematical expression safely.")
+    @app_commands.describe(expression="Math expression (e.g. 2+2, sqrt(16), 10^3)")
+    async def calc(self, interaction: discord.Interaction, expression: str):
+        import math, re
+        try:
+            # Safe evaluation using math module
+            safe_expr = expression.replace("^", "**").replace("×", "*").replace("÷", "/")
+            allowed = set("0123456789+-*/().% ")
+            math_funcs = {k: v for k, v in vars(math).items() if not k.startswith("_")}
+            math_funcs.update({"abs": abs, "round": round, "min": min, "max": max})
+            if any(c not in allowed and not c.isalpha() and c not in "(),._" for c in safe_expr):
+                raise ValueError("Unsafe expression")
+            result = eval(safe_expr, {"__builtins__": {}}, math_funcs)
+            if isinstance(result, float) and result.is_integer():
+                result = int(result)
+            embed = success_embed("🧮 Calculator", f"**Input:** `{expression}`\n**Result:** `{result}`")
+        except ZeroDivisionError:
+            embed = error_embed("Division by Zero", "You can't divide by zero!")
+        except Exception as e:
+            embed = error_embed("Invalid Expression", f"Could not evaluate: `{expression}`\nTip: Use `*` for multiply, `**` for power, `sqrt()`, `sin()`, etc.")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="emojis", description="List all custom emojis in this server.")
+    async def emojis(self, interaction: discord.Interaction):
+        if not interaction.guild.emojis:
+            return await interaction.response.send_message(embed=info_embed("No Custom Emojis", "This server has no custom emojis."))
+        static = [e for e in interaction.guild.emojis if not e.animated]
+        animated = [e for e in interaction.guild.emojis if e.animated]
+        embed = comprehensive_embed(title=f"🎨 Custom Emojis ({len(interaction.guild.emojis)})", color=discord.Color.blurple())
+        if static:
+            preview = " ".join(str(e) for e in static[:30])
+            embed.add_field(name=f"Static ({len(static)})", value=preview[:1024] or "None", inline=False)
+        if animated:
+            preview = " ".join(str(e) for e in animated[:30])
+            embed.add_field(name=f"Animated ({len(animated)})", value=preview[:1024] or "None", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="color", description="Preview a color from a hex code with detailed information.")
+    @app_commands.describe(hex_code="Hex color code e.g. FF5733 or #FF5733")
+    async def color(self, interaction: discord.Interaction, hex_code: str):
+        try:
+            clean = hex_code.lstrip("#")
+            if len(clean) != 6:
+                raise ValueError
+            r, g, b = int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16)
+            color_val = discord.Color(int(clean, 16))
+            # HSL conversion
+            r_, g_, b_ = r/255, g/255, b/255
+            cmax, cmin = max(r_, g_, b_), min(r_, g_, b_)
+            l = (cmax + cmin) / 2
+            s = 0 if cmax == cmin else (cmax - cmin) / (1 - abs(2*l - 1))
+            # Complementary
+            comp_hex = f"{255-r:02X}{255-g:02X}{255-b:02X}"
+            embed = discord.Embed(title=f"🎨 Color: #{clean.upper()}", color=color_val)
+            embed.add_field(name="HEX", value=f"`#{clean.upper()}`", inline=True)
+            embed.add_field(name="RGB", value=f"`rgb({r}, {g}, {b})`", inline=True)
+            embed.add_field(name="HSL", value=f"`hsl({int((cmax-cmin)/(cmax+cmin)*60) if cmax != cmin else 0}°, {int(s*100)}%, {int(l*100)}%)`", inline=True)
+            embed.add_field(name="Decimal", value=f"`{int(clean, 16)}`", inline=True)
+            embed.add_field(name="Complementary", value=f"`#{comp_hex}`", inline=True)
+            embed.add_field(name="Brightness", value="Light 🌤️" if l > 0.5 else "Dark 🌑", inline=True)
+            embed.set_image(url=f"https://singlecolorimage.com/get/{clean}/200x80")
+            await interaction.response.send_message(embed=embed)
+        except (ValueError, Exception):
+            await interaction.response.send_message(embed=error_embed("Invalid Color", "Please provide a valid 6-character hex code like `FF5733` or `#1A2B3C`."), ephemeral=True)
+
+    @app_commands.command(name="weather", description="Get current weather for any city using wttr.in.")
+    @app_commands.describe(city="City name (e.g. New York, London, Tokyo)")
+    async def weather(self, interaction: discord.Interaction, city: str):
+        await interaction.response.defer()
+        import aiohttp
+        try:
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        return await interaction.followup.send(embed=error_embed("City Not Found", f"Could not find weather data for **{city}**."))
+                    data = await r.json()
+            current = data["current_condition"][0]
+            area = data["nearest_area"][0]
+            city_name = area["areaName"][0]["value"]
+            country = area["country"][0]["value"]
+            temp_c = current["temp_C"]
+            temp_f = current["temp_F"]
+            feels_c = current["FeelsLikeC"]
+            humidity = current["humidity"]
+            wind_kph = current["windspeedKmph"]
+            desc = current["weatherDesc"][0]["value"]
+            visibility = current["visibility"]
+            embed = comprehensive_embed(
+                title=f"🌤️ Weather — {city_name}, {country}",
+                description=f"**{desc}**",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="🌡️ Temperature", value=f"**{temp_c}°C** / {temp_f}°F", inline=True)
+            embed.add_field(name="🤔 Feels Like", value=f"**{feels_c}°C**", inline=True)
+            embed.add_field(name="💧 Humidity", value=f"**{humidity}%**", inline=True)
+            embed.add_field(name="💨 Wind", value=f"**{wind_kph} km/h**", inline=True)
+            embed.add_field(name="👁️ Visibility", value=f"**{visibility} km**", inline=True)
+            embed.set_footer(text="Powered by wttr.in | NEXUS Bot")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(embed=error_embed("Error", f"Could not fetch weather for **{city}**. Try a different city name."))
+
+    @app_commands.command(name="define", description="Look up the definition of any English word.")
+    @app_commands.describe(word="Word to define")
+    async def define(self, interaction: discord.Interaction, word: str):
+        await interaction.response.defer()
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{urllib.parse.quote(word)}", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        return await interaction.followup.send(embed=error_embed("Not Found", f"No definition found for **{word}**."))
+                    data = await r.json()
+            entry = data[0]
+            phonetic = entry.get("phonetic", "")
+            embed = comprehensive_embed(
+                title=f"📖 Definition: {word.capitalize()}",
+                description=phonetic if phonetic else None,
+                color=discord.Color.blue()
+            )
+            for meaning in entry.get("meanings", [])[:3]:
+                pos = meaning["partOfSpeech"]
+                defs = meaning.get("definitions", [])[:2]
+                for d in defs:
+                    definition = d.get("definition", "")
+                    example = d.get("example", "")
+                    value = definition
+                    if example:
+                        value += f"\n*Example: {example}*"
+                    synonyms = d.get("synonyms", [])[:3]
+                    if synonyms:
+                        value += f"\n**Synonyms:** {', '.join(synonyms)}"
+                    embed.add_field(name=f"*{pos}*", value=value[:600], inline=False)
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            await interaction.followup.send(embed=error_embed("Error", f"Could not find a definition for **{word}**."))
+
+    @app_commands.command(name="help", description="Get a full list of all NEXUS commands organized by category.")
+    async def help(self, interaction: discord.Interaction):
+        embed = comprehensive_embed(
+            title="📚 NEXUS — Full Command Reference",
+            description="220+ commands organized by category. All premium features, completely free.",
+            color=discord.Color.blurple(),
+            thumbnail_url=self.bot.user.display_avatar.url
+        )
+        categories = [
+            ("🛡️ /mod", "warn, warnings, clearwarns, kick, ban, unban, softban, timeout, untimeout, purge, slowmode, lock, unlock, nick, history"),
+            ("⚙️ /setup", "welcome, farewell, logs, autorole, muterole, leveling, economy, ai-responses, levelup-channel, ai-persona, view"),
+            ("💰 Economy", "balance, work, daily, weekly, deposit, withdraw, pay, rob, slots, blackjack, coinflip, shop, buy, rich"),
+            ("📊 /levels", "rank, leaderboard, set-xp, add-xp, reset, reward-add, reward-remove, rewards"),
+            ("🤖 /ai", "ask, chat, summarize, translate, brainstorm, code-explain, code-debug, sentiment, rewrite, grammar, generate, fact-check, roast, analyze-image, clear-memory"),
+            ("🎮 /fun", "8ball, roll, choose, ship, meme, fact, cat, dog, rps, trivia, joke, would-you-rather, never-have-i-ever, fortune, rate"),
+            ("🔧 Utility", "ping, userinfo, serverinfo, avatar, banner, roleinfo, channelinfo, botinfo, remind, poll, afk, timestamp, calc, emojis, help"),
+            ("🎭 /social", "hug, kiss, pat, slap, cuddle, dance, highfive, wave, bite, poke"),
+            ("🎉 /giveaway", "start, end, reroll, list, cancel, edit-prize, winners, delete"),
+            ("📢 /announcement", "send, schedule, list, cancel, edit, mention-role, set-channel"),
+            ("🎫 /ticket", "setup, create, close, add, remove, transcript, list"),
+            ("🎵 /music", "play, pause, resume, stop, skip, queue, nowplaying, volume, shuffle, loop, remove"),
+            ("✅ /verify", "setup, config, update-message, update-role, stats, reset"),
+            ("📊 /leaderboard", "xp, economy, commands"),
+            ("💾 /backup", "create, list, restore, delete, export"),
+            ("🤖 /automod", "setup, toggle, anti-spam, anti-links, anti-caps, add-filter, remove-filter, list-filters"),
+        ]
+        for name, cmds in categories:
+            embed.add_field(name=name, value=cmds, inline=False)
+        embed.set_footer(text="NEXUS Bot by Team Flame | Premium features, 100% free.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(Utility(bot))

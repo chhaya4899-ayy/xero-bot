@@ -1,0 +1,28 @@
+[build]
+builder        = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Discord bots don't need HTTP health checks
+healthcheckPath       = ""
+startCommand          = "python main.py"
+restartPolicyType     = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# ─────────────────────────────────────────────────────────────────
+# PERSISTENT STORAGE — CRITICAL (read before next deploy)
+# ─────────────────────────────────────────────────────────────────
+# Railway's filesystem is wiped on every redeploy.
+# All server configs (welcome msgs, mod logs, level settings, etc.)
+# live in data/xero.db which gets wiped without a Volume mounted.
+#
+# OPTION A — Railway Volume (recommended, 2 min setup):
+#   Dashboard → XERO service → Storage → Add Volume
+#   Mount Path: /app/data
+#   Done. DB survives all future redeploys forever.
+#
+# OPTION B — Auto Discord backup (code-based fallback):
+#   Create a private channel XERO can see.
+#   Add env var: BACKUP_CHANNEL_ID=<channel_id>
+#   XERO will auto-backup every 30 min and auto-restore on redeploy.
+# ─────────────────────────────────────────────────────────────────
