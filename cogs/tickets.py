@@ -39,6 +39,7 @@ import logging
 import datetime
 import time
 import hashlib
+import random
 import re
 from collections import defaultdict, deque
 from discord.ext import commands, tasks
@@ -65,7 +66,7 @@ TC_DANGER   = 0xED4245
 DEFAULT_CATEGORIES = {
     "general": {
         "label": "General Support",
-        "emoji": "🪪",
+        "emoji": "💬",
         "description": "Basic questions & inquiries",
         "priority": "low",
     },
@@ -83,11 +84,21 @@ DEFAULT_CATEGORIES = {
     },
     "other": {
         "label": "Other",
-        "emoji": "✦",
+        "emoji": "🌐",
         "description": "Anything else not listed above",
         "priority": "low",
     },
 }
+
+# Random flavor lines rotated under the panel footer.
+PANEL_FLAVORS = [
+    "Tip: include screenshots, links, and what you've already tried — it speeds things up by ~3×.",
+    "Tip: one ticket per topic. Mixing issues makes them slower to resolve.",
+    "Tip: check pinned messages and announcements first — your answer might already be there.",
+    "Heads up: low-effort tickets are auto-flagged. Be specific and you'll be helped faster.",
+    "Did you know? Our routing system always sends your ticket to the staff member with the lightest load.",
+    "Heads up: every conversation is summarised by AI on close, so the same issue isn't re-explained next time.",
+]
 
 PRIORITY_LABELS = {
     "urgent": "🔴 Urgent",
@@ -111,6 +122,42 @@ _panel_click_throttle: dict[tuple[int, int], float] = defaultdict(float)
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w{2,32}:\d{15,22}>$")
+# Single-codepoint Unicode emoji in the supplementary plane (U+1F000+) are
+# safe; tons of common BMP emoji are NOT (e.g. ✦, ★ raw — Discord rejects
+# them at the API). Allow only an explicit BMP allowlist of well-known emoji.
+_BMP_EMOJI_ALLOW = set("⭐✅❌⚠️ℹ️❓❗➕➖⏳⏰⌛✉️✏️📌📎📁📂📄📊📋📍📞📢📣📤📥📦"
+                       "📨📩📪📫📬📭📮🔍🔎🔒🔓🔔🔕🔖🔗🔘🔙🔚🔛🔜🔝🔞🔟🔠🔡🔢"
+                       "🔣🔤🔥🔧🔨🔩🔪🔫🔬🔭🔮🔯🕐🕑🕒🕓🕔🕕🕖🕗🕘🕙🕚🕛🕜🕝"
+                       "🕞🕟🕠🕡🕢🕣🕤🕥🕦🕧🌐🌑🌒🌓🌔🌕🌖🌗🌘🌙🌚🌛🌜🌝🌞")
+
+
+def _safe_emoji(s: str | None):
+    """Return an emoji string Discord will accept on a SelectOption — or None.
+
+    Catches the common 50035 'invalid emoji' error caused by glyphs that
+    look like emoji but aren't on Discord's emoji list (e.g. ✦, ★).
+    """
+    if not s:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    # Custom guild emoji form: <:name:id> or <a:name:id>
+    if _CUSTOM_EMOJI_RE.match(s):
+        return s
+    # Single supplementary-plane codepoint (covers most modern emoji)
+    if any(ord(c) >= 0x1F000 for c in s):
+        return s
+    # Allow our curated BMP set
+    if s in _BMP_EMOJI_ALLOW:
+        return s
+    # Some emoji are 2 chars (base + variation selector U+FE0F)
+    if len(s) == 2 and s.endswith("\ufe0f") and ord(s[0]) >= 0x2300:
+        return s
+    return None
 
 
 def _sanitize_channel_name(raw: str) -> str:
@@ -420,25 +467,29 @@ class TicketCategorySelect(ui.Select):
     """The category dropdown — lives inside an ActionRow inside the Container."""
 
     def __init__(self, options_data: list | None = None):
-        if options_data:
-            options = [
-                discord.SelectOption(
-                    label=o["label"], value=o["value"],
-                    emoji=o.get("emoji") or "📌",
-                    description=(o.get("description") or "")[:100],
-                )
-                for o in options_data[:25]
-            ]
-        else:
-            options = [
-                discord.SelectOption(
-                    label=v["label"], value=k,
-                    emoji=v["emoji"], description=v["description"],
-                )
-                for k, v in DEFAULT_CATEGORIES.items()
-            ]
+        if not options_data:
+            options_data = [{"value": k, **v} for k, v in DEFAULT_CATEGORIES.items()]
+
+        options = []
+        for o in options_data[:25]:
+            label = (o.get("label") or o.get("value") or "Option")[:100]
+            value = (o.get("value") or label.lower().replace(" ", "_"))[:100]
+            desc  = (o.get("description") or "")[:100]
+            emoji = _safe_emoji(o.get("emoji"))
+            try:
+                options.append(discord.SelectOption(
+                    label=label, value=value, emoji=emoji, description=desc,
+                ))
+            except Exception:
+                # Last-resort: drop the emoji entirely if Discord still rejects it.
+                options.append(discord.SelectOption(
+                    label=label, value=value, description=desc,
+                ))
+        if not options:
+            options = [discord.SelectOption(label="Support", value="general")]
+
         super().__init__(
-            placeholder="Select a support category…",
+            placeholder="Choose a support category to begin…",
             min_values=1, max_values=1, options=options,
             custom_id="xero_t_v3_select",
         )
@@ -513,50 +564,75 @@ class TicketPanelView(ui.LayoutView):
         cats = categories or DEFAULT_CATEGORIES
         gname = guild.name if guild else "Support"
         gicon = guild.icon.url if (guild and guild.icon) else None
-        avg_resp = stats.get("avg_response", "—") if stats else "—"
-        open_n = stats.get("open_count", 0) if stats else 0
-        rating = stats.get("avg_rating", "—") if stats else "—"
+        avg_resp   = stats.get("avg_response", "—") if stats else "—"
+        open_n     = stats.get("open_count", 0)     if stats else 0
+        rating     = stats.get("avg_rating", "—")   if stats else "—"
+        oncall_n   = stats.get("oncall_count", 0)   if stats else 0
+        resolved_n = stats.get("resolved_total", 0) if stats else 0
 
+        # Pretty category cards — each line gets a priority dot + emoji.
+        pri_dot = {"urgent": "🔴", "high": "🟠", "normal": "🟡", "low": "🟢"}
         cat_lines = []
         for k, v in cats.items():
-            cat_lines.append(
-                f"{v['emoji']}  **{v['label']}** — {v.get('description','')}"
-            )
-        cat_block = "\n".join(cat_lines) or "_No categories configured._"
+            dot = pri_dot.get(v.get("priority", "normal"), "🟡")
+            emo = v.get("emoji") or "📌"
+            desc = (v.get("description") or "").strip() or "_No description._"
+            cat_lines.append(f"{dot}  {emo}  **{v['label']}**\n  ↳ {desc}")
+        cat_block = "\n\n".join(cat_lines) or "_No categories configured._"
 
-        container = ui.Container(accent_colour=discord.Colour(TC_DARK))
+        # Rotate flavor lines so panels feel alive.
+        flavor = random.choice(PANEL_FLAVORS)
 
-        # Header section with thumbnail
+        # Live status pill — green if anyone on-call, amber if not.
+        status_pill = "🟢 **Online — staff on duty**" if oncall_n > 0 else \
+                      "🟡 **Online — auto-routing only**"
+
+        container = ui.Container(accent_colour=discord.Colour(TC_PRIMARY))
+
+        # ── BANNER ───────────────────────────────────────────────────────
         container.add_item(_section_with_thumb(
-            f"# 🎫  {gname} — Support Centre\n"
-            f"_Need a hand? Pick a category below and a triage form will pop up.\n"
-            f"Our team is workload-balanced and SLA-monitored — you're in good hands._",
+            f"# 🎫  {gname} · Support Centre\n"
+            f"### _Real humans. AI-assisted triage. SLA-tracked._\n"
+            f"{status_pill}",
             gicon,
         ))
         container.add_item(_sep("small"))
 
+        # ── LIVE STAT STRIP ──────────────────────────────────────────────
+        container.add_item(_td(
+            f"```ansi\n"
+            f"\u001b[1;36m  ⚡ AVG RESPONSE \u001b[0m {avg_resp:<10}"
+            f"\u001b[1;36m  📂 OPEN \u001b[0m {open_n:<6}"
+            f"\u001b[1;36m  ⭐ RATING \u001b[0m {rating:<10}"
+            f"\u001b[1;36m  ✅ RESOLVED \u001b[0m {resolved_n}\n"
+            f"```"
+        ))
+        container.add_item(_sep("small"))
+
+        # ── HOW IT WORKS ─────────────────────────────────────────────────
+        container.add_item(_td(
+            "### How it works\n"
+            "**1.** Pick a category below.\n"
+            "**2.** Fill in a quick triage form — subject, details, urgency.\n"
+            "**3.** A private channel opens and the right staff member is paged.\n"
+            "**4.** AI summarises the case on close so it's never re-explained."
+        ))
+        container.add_item(_sep("small"))
+
+        # ── CATEGORIES ───────────────────────────────────────────────────
         container.add_item(_td(f"### Categories\n{cat_block}"))
         container.add_item(_sep("small"))
 
-        # Live stat strip
-        container.add_item(_td(
-            f"**Avg first response:** `{avg_resp}`   "
-            f"•   **Open tickets:** `{open_n}`   "
-            f"•   **Satisfaction:** `{rating}`"
-        ))
-        container.add_item(_sep("small"))
-
-        # The select goes inside an ActionRow
-        row = ui.ActionRow(TicketCategorySelect(
+        # ── THE SELECT ───────────────────────────────────────────────────
+        container.add_item(ui.ActionRow(TicketCategorySelect(
             [{"value": k, **v} for k, v in cats.items()]
-        ))
-        container.add_item(row)
+        )))
 
-        container.add_item(_sep("small"))
+        # ── FOOTER (no separator before it — keeps us within Container's 10-child cap)
         container.add_item(_td(
-            "_By opening a ticket you agree this conversation may be logged for "
-            "quality, security and AI-assisted summaries. Frivolous tickets are "
-            "rate-limited._"
+            f"💡 {flavor}\n"
+            f"-# By opening a ticket you agree this conversation may be logged for "
+            f"quality, security and AI-assisted summaries. Frivolous tickets are rate-limited."
         ))
 
         self.add_item(container)
@@ -566,7 +642,10 @@ async def _build_panel_view(bot, guild: discord.Guild) -> TicketPanelView:
     settings = await bot.db.get_guild_settings(guild.id)
     cats = await _get_categories(bot.db, guild.id)
 
-    stats = {"avg_response": "—", "open_count": 0, "avg_rating": "—"}
+    stats = {
+        "avg_response": "—", "open_count": 0, "avg_rating": "—",
+        "oncall_count": 0, "resolved_total": 0,
+    }
     try:
         async with bot.db._db_context() as db:
             db.row_factory = aiosqlite.Row
@@ -576,12 +655,17 @@ async def _build_panel_view(bot, guild: discord.Guild) -> TicketPanelView:
             ) as c:
                 stats["open_count"] = (await c.fetchone())["n"]
             async with db.execute(
+                "SELECT COUNT(*) as n FROM tickets WHERE guild_id=? AND status='closed'",
+                (guild.id,),
+            ) as c:
+                stats["resolved_total"] = (await c.fetchone())["n"]
+            async with db.execute(
                 "SELECT AVG(rating) as r FROM tickets WHERE guild_id=? AND rating IS NOT NULL",
                 (guild.id,),
             ) as c:
                 row = await c.fetchone()
                 if row and row["r"]:
-                    stats["avg_rating"] = f"{row['r']:.1f}/5 ⭐"
+                    stats["avg_rating"] = f"{row['r']:.1f}/5"
             async with db.execute(
                 "SELECT AVG(avg_response_seconds) as a FROM ticket_staff_load WHERE guild_id=? AND avg_response_seconds>0",
                 (guild.id,),
@@ -590,6 +674,11 @@ async def _build_panel_view(bot, guild: discord.Guild) -> TicketPanelView:
                 if row and row["a"]:
                     secs = int(row["a"])
                     stats["avg_response"] = f"{secs // 60}m {secs % 60}s"
+            async with db.execute(
+                "SELECT COUNT(*) as n FROM ticket_oncall WHERE guild_id=? AND on_duty=1",
+                (guild.id,),
+            ) as c:
+                stats["oncall_count"] = (await c.fetchone())["n"]
     except Exception:
         pass
 
@@ -614,28 +703,63 @@ class TicketHeaderView(ui.LayoutView):
             self.add_item(TicketUtilRow())
             return
 
-        cont = ui.Container(accent_colour=discord.Colour(TC_DARK))
+        # Priority → accent colour for the whole container.
+        accent_map = {
+            "urgent": TC_DANGER, "high": 0xE67E22,
+            "normal": TC_PRIMARY, "low": TC_SUCCESS,
+        }
+        accent = accent_map.get(priority, TC_PRIMARY)
+        cont = ui.Container(accent_colour=discord.Colour(accent))
 
+        # ── BANNER: ticket code + opener avatar ──────────────────────────
+        ticket_code = f"XR-#{ticket_id:04d}"
+        joined_str = ""
+        try:
+            if opener.joined_at:
+                joined_str = f"  •  member since <t:{int(opener.joined_at.timestamp())}:R>"
+        except Exception:
+            pass
         cont.add_item(_section_with_thumb(
-            f"# Ticket #{ticket_id} — {cat_info['emoji']} {cat_info['label']}\n"
-            f"Opened by {opener.mention}  •  `{opener}`",
+            f"# {cat_info.get('emoji','🎫')}  {cat_info['label']}\n"
+            f"### `{ticket_code}`  •  opened by {opener.mention}\n"
+            f"-# `{opener}`{joined_str}",
             opener.display_avatar.url,
         ))
         cont.add_item(_sep("small"))
 
-        if triage_summary:
-            cont.add_item(_td(f"### Issue summary\n>>> {triage_summary[:1500]}"))
-            cont.add_item(_sep("small"))
-
-        sla_str = f"<t:{sla_due_ts}:R>" if sla_due_ts else "—"
-        routed = routed_to.mention if routed_to else "_unassigned_"
-        sev = severity_label or PRIORITY_LABELS.get(priority, priority)
-
+        # ── STATUS TRACK ─────────────────────────────────────────────────
+        # 🟢 Open  →  ◯ Claimed  →  ◯ Resolved   (only first dot lit at create)
         cont.add_item(_td(
-            f"**Priority:** {PRIORITY_LABELS.get(priority, priority)}   "
-            f"•   **AI severity:** {sev}\n"
-            f"**Response SLA:** {sla_str}   "
-            f"•   **Routed to:** {routed}"
+            "```\n"
+            "🟢 Open ━━━━━ ⚪ Claimed ━━━━━ ⚪ Resolved\n"
+            "```"
+        ))
+
+        # ── ISSUE SUMMARY ────────────────────────────────────────────────
+        if triage_summary:
+            cont.add_item(_td(
+                f"### 📝 Issue summary\n"
+                f">>> {triage_summary[:1400]}"
+            ))
+
+        # ── METADATA STRIP (priority • severity • SLA • routing) ─────────
+        sla_str = f"<t:{sla_due_ts}:R>" if sla_due_ts else "—"
+        routed = routed_to.mention if routed_to else "_auto-routing in progress…_"
+        sev = severity_label or PRIORITY_LABELS.get(priority, priority)
+        cont.add_item(_td(
+            f"### 🎯 Routing & SLA\n"
+            f"**Priority** · {PRIORITY_LABELS.get(priority, priority)}\n"
+            f"**AI severity** · {sev}\n"
+            f"**Response SLA** · {sla_str}\n"
+            f"**Routed to** · {routed}"
+        ))
+
+        # ── NEXT STEPS GUIDANCE ──────────────────────────────────────────
+        cont.add_item(_td(
+            "### ✨ While you wait\n"
+            "• Add screenshots, links, IDs — anything that helps.\n"
+            "• Staff will be paged automatically; no need to re-ping.\n"
+            "• Use `/ticket close` when your issue is resolved."
         ))
         cont.add_item(_sep("small"))
 
@@ -1507,104 +1631,10 @@ async def _delete_panel_record(db_obj, message_id: int):
         await db.commit()
 
 
-async def _is_old_panel(msg: discord.Message) -> bool:
-    """Detect a v1/v2 XERO ticket panel embed."""
-    if not msg.author.bot or not msg.embeds:
-        return False
-    for e in msg.embeds:
-        title = (e.title or "")
-        footer = (e.footer.text if e.footer else "") or ""
-        if "Support" in title and ("Support System" in footer or "XERO" in footer.upper()):
-            return True
-        if "ticket" in title.lower() and "support" in (e.description or "").lower():
-            return True
-    return False
-
-
-async def _repost_panels_for_guild(bot, guild: discord.Guild) -> int:
-    """For one guild, locate existing tracked OR legacy panels and repost as V2."""
-    reposted = 0
-    settings = await bot.db.get_guild_settings(guild.id)
-
-    # 1. Tracked panels
-    async with bot.db._db_context() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM ticket_panels WHERE guild_id=?", (guild.id,)
-        ) as c:
-            tracked = [dict(r) for r in await c.fetchall()]
-
-    handled_channels: set[int] = set()
-
-    for rec in tracked:
-        ch = guild.get_channel(rec["channel_id"])
-        if not ch:
-            await _delete_panel_record(bot.db, rec["message_id"])
-            continue
-        # Skip if already at current version
-        if rec.get("version") == PANEL_VERSION:
-            try:
-                await ch.fetch_message(rec["message_id"])
-                handled_channels.add(ch.id)
-                continue
-            except discord.NotFound:
-                await _delete_panel_record(bot.db, rec["message_id"])
-        # Otherwise: delete old, repost
-        try:
-            old = await ch.fetch_message(rec["message_id"])
-            try:
-                await old.delete()
-            except Exception: pass
-        except discord.NotFound: pass
-        view = await _build_panel_view(bot, guild)
-        try:
-            new_msg = await ch.send(view=view)
-            await _register_panel(bot.db, guild.id, ch.id, new_msg.id)
-            await _delete_panel_record(bot.db, rec["message_id"])
-            handled_channels.add(ch.id)
-            reposted += 1
-        except Exception as e:
-            logger.warning(f"[{guild.id}] panel repost failed in #{ch}: {e}")
-
-    # 2. Legacy panel detection (no tracking row exists)
-    panel_ch_id = settings.get("ticket_panel_channel_id")
-    candidate_ids = set()
-    if panel_ch_id:
-        candidate_ids.add(panel_ch_id)
-
-    # Only sweep if guild has *some* ticket setup but no tracked panels
-    has_setup = settings.get("ticket_support_role_id") or settings.get("ticket_category_id")
-    if has_setup and not handled_channels:
-        for ch in guild.text_channels[:80]:  # hard cap to be polite
-            if ch.id in handled_channels: continue
-            if not ch.permissions_for(guild.me).read_message_history: continue
-            try:
-                async for msg in ch.history(limit=30):
-                    if await _is_old_panel(msg):
-                        candidate_ids.add(ch.id)
-                        try: await msg.delete()
-                        except Exception: pass
-                        break
-            except Exception:
-                continue
-            if len(candidate_ids) >= 3:
-                break
-
-    for cid in candidate_ids:
-        if cid in handled_channels: continue
-        ch = guild.get_channel(cid)
-        if not ch: continue
-        view = await _build_panel_view(bot, guild)
-        try:
-            m = await ch.send(view=view)
-            await _register_panel(bot.db, guild.id, ch.id, m.id)
-            await bot.db.update_guild_setting(guild.id, "ticket_panel_channel_id", ch.id)
-            handled_channels.add(ch.id)
-            reposted += 1
-        except Exception as e:
-            logger.warning(f"[{guild.id}] legacy repost failed in #{ch}: {e}")
-
-    return reposted
+# NOTE: legacy panel auto-detection / auto-repost was removed.
+# Setup is now explicit: admins re-run `/ticket setup` to publish a fresh
+# panel. This is simpler, predictable, and avoids touching unrelated
+# messages in any server.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1708,7 +1738,6 @@ class Tickets(commands.GroupCog, name="ticket"):
         # Register persistent action rows by sending a dummy LayoutView once
         # (discord.py treats LayoutView's children as persistent automatically when timeout=None)
         self._sla_loop.start()
-        self._panel_repost_started = False
 
     def cog_unload(self):
         try: self._sla_loop.cancel()
@@ -2001,11 +2030,11 @@ class Tickets(commands.GroupCog, name="ticket"):
                 return await interaction.response.send_message(
                     embed=error_embed("Failed", str(e)[:200]), ephemeral=True
                 )
-        await _repost_panels_for_guild(self.bot, interaction.guild)
         await interaction.response.send_message(
             embed=success_embed(
                 "Category added",
-                f"{emoji} **{name}** ({PRIORITY_LABELS[priority]}) — panel auto-updated."
+                f"{emoji} **{name}** ({PRIORITY_LABELS[priority]}) — "
+                f"re-run `/ticket setup` to refresh the panel."
             ),
             ephemeral=True,
         )
@@ -2021,9 +2050,11 @@ class Tickets(commands.GroupCog, name="ticket"):
                 (interaction.guild.id, key),
             )
             await db.commit()
-        await _repost_panels_for_guild(self.bot, interaction.guild)
         await interaction.response.send_message(
-            embed=success_embed("Removed", f"**{name}** removed — panel auto-updated."),
+            embed=success_embed(
+                "Removed",
+                f"**{name}** removed — re-run `/ticket setup` to refresh the panel."
+            ),
             ephemeral=True,
         )
 
@@ -2434,31 +2465,6 @@ class Tickets(commands.GroupCog, name="ticket"):
     @_sla_loop.before_loop
     async def _before_sla(self):
         await self.bot.wait_until_ready()
-
-    # ── on_ready hook: auto-repost panels in every guild ──────────────────
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if self._panel_repost_started:
-            return
-        self._panel_repost_started = True
-        # Run after a short delay to let other startup tasks finish
-        asyncio.create_task(self._repost_all_panels_safely())
-
-    async def _repost_all_panels_safely(self):
-        await asyncio.sleep(15)
-        total = 0
-        for g in list(self.bot.guilds):
-            try:
-                n = await _repost_panels_for_guild(self.bot, g)
-                total += n
-                if n: logger.info(f"[Tickets] {g.name}: reposted {n} panel(s) to v{PANEL_VERSION}.")
-                await asyncio.sleep(0.5)  # be polite on the API
-            except Exception as e:
-                logger.warning(f"[Tickets] {g.name}: panel repost failed: {e}")
-        if total:
-            logger.info(f"[Tickets] auto-reposted {total} panel(s) across {len(self.bot.guilds)} guild(s).")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Setup — schema migrations
