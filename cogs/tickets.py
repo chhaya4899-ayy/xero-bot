@@ -64,28 +64,46 @@ TC_WARNING  = 0xFEE75C
 TC_DANGER   = 0xED4245
 
 DEFAULT_CATEGORIES = {
-    "general": {
-        "label": "General Support",
-        "emoji": "💬",
-        "description": "Basic questions & inquiries",
-        "priority": "low",
-    },
-    "senior": {
-        "label": "Senior Support",
-        "emoji": "🎟️",
-        "description": "Prize claims & partnership requests",
-        "priority": "normal",
-    },
-    "executive": {
-        "label": "Executive Support",
-        "emoji": "🛡️",
-        "description": "Career, reports & appeals",
+    "technical": {
+        "label": "Technical Support",
+        "emoji": "🛠️",
+        "description": "Discord/ERLC errors, bugs, system malfunctions",
         "priority": "high",
     },
+    "internal_affairs": {
+        "label": "Internal Affairs & Appeals",
+        "emoji": "⚖️",
+        "description": "Player reports (RDM/VDM/FailRP) & moderation appeals",
+        "priority": "high",
+    },
+    "departmental": {
+        "label": "Departmental & Career Inquiries",
+        "emoji": "🚔",
+        "description": "LEO/EMS/Fire applications, certs & promotions",
+        "priority": "normal",
+    },
+    "management": {
+        "label": "Management Direct Line",
+        "emoji": "✉️",
+        "description": "Partnerships, exec applications, BoD matters",
+        "priority": "urgent",
+    },
+    "treasury": {
+        "label": "Treasury & Logistics",
+        "emoji": "💳",
+        "description": "Giveaway prizes, payouts, sponsorships, queue",
+        "priority": "normal",
+    },
+    "administrative": {
+        "label": "Administrative Services",
+        "emoji": "📂",
+        "description": "Whitelist, role verification, name changes",
+        "priority": "low",
+    },
     "other": {
-        "label": "Other",
-        "emoji": "🌐",
-        "description": "Anything else not listed above",
+        "label": "Other / Miscellaneous",
+        "emoji": "⚙️",
+        "description": "Anything that doesn't fit the categories above",
         "priority": "low",
     },
 }
@@ -570,15 +588,20 @@ class TicketPanelView(ui.LayoutView):
         oncall_n   = stats.get("oncall_count", 0)   if stats else 0
         resolved_n = stats.get("resolved_total", 0) if stats else 0
 
-        # Pretty category cards — each line gets a priority dot + emoji.
+        # Pretty category cards — compact one-liner per category so the
+        # block stays readable on phones even with 7+ categories.
         pri_dot = {"urgent": "🔴", "high": "🟠", "normal": "🟡", "low": "🟢"}
         cat_lines = []
         for k, v in cats.items():
             dot = pri_dot.get(v.get("priority", "normal"), "🟡")
             emo = v.get("emoji") or "📌"
-            desc = (v.get("description") or "").strip() or "_No description._"
-            cat_lines.append(f"{dot}  {emo}  **{v['label']}**\n  ↳ {desc}")
-        cat_block = "\n\n".join(cat_lines) or "_No categories configured._"
+            desc = (v.get("description") or "").strip()
+            label = v["label"]
+            if desc:
+                cat_lines.append(f"{dot} {emo} **{label}** — {desc}")
+            else:
+                cat_lines.append(f"{dot} {emo} **{label}**")
+        cat_block = "\n".join(cat_lines) or "_No categories configured._"
 
         # Rotate flavor lines so panels feel alive.
         flavor = random.choice(PANEL_FLAVORS)
@@ -599,13 +622,13 @@ class TicketPanelView(ui.LayoutView):
         container.add_item(_sep("small"))
 
         # ── LIVE STAT STRIP ──────────────────────────────────────────────
+        # Vertical layout — wraps cleanly on mobile, no horizontal overflow.
         container.add_item(_td(
-            f"```ansi\n"
-            f"\u001b[1;36m  ⚡ AVG RESPONSE \u001b[0m {avg_resp:<10}"
-            f"\u001b[1;36m  📂 OPEN \u001b[0m {open_n:<6}"
-            f"\u001b[1;36m  ⭐ RATING \u001b[0m {rating:<10}"
-            f"\u001b[1;36m  ✅ RESOLVED \u001b[0m {resolved_n}\n"
-            f"```"
+            "### 📊 Live status\n"
+            f"⚡ **Avg response** · `{avg_resp}`\n"
+            f"📂 **Open right now** · `{open_n}`\n"
+            f"⭐ **Rating** · `{rating}`\n"
+            f"✅ **Resolved (all-time)** · `{resolved_n}`"
         ))
         container.add_item(_sep("small"))
 
@@ -782,6 +805,38 @@ class TicketActionRow(ui.ActionRow):
 
     @ui.button(label="Close", style=discord.ButtonStyle.danger,
                custom_id="xero_t_v3_close", emoji="🔒")
+    async def close(self, interaction: discord.Interaction, button: ui.Button):
+        if not interaction.user.guild_permissions.manage_channels:
+            return await interaction.response.send_message(
+                embed=error_embed("Staff only", "You don't have permission."),
+                ephemeral=True,
+            )
+        await _close_flow(interaction, interaction.client)
+
+
+class TicketFallbackActionsView(ui.View):
+    """Plain View used in the V2-failure fallback path.
+
+    `channel.send(view=...)` requires a `ui.View`; passing a bare ActionRow
+    raises 'parameter must be View not TicketActionRow'. We use distinct
+    custom_ids so this view never collides with the V2 persistent registry.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Claim", style=discord.ButtonStyle.secondary,
+               custom_id="xero_t_v3_claim_fb", emoji="🙋")
+    async def claim(self, interaction: discord.Interaction, button: ui.Button):
+        await _action_claim(interaction)
+
+    @ui.button(label="Unclaim", style=discord.ButtonStyle.secondary,
+               custom_id="xero_t_v3_unclaim_fb", emoji="🔓")
+    async def unclaim(self, interaction: discord.Interaction, button: ui.Button):
+        await _action_unclaim(interaction)
+
+    @ui.button(label="Close", style=discord.ButtonStyle.danger,
+               custom_id="xero_t_v3_close_fb", emoji="🔒")
     async def close(self, interaction: discord.Interaction, button: ui.Button):
         if not interaction.user.guild_permissions.manage_channels:
             return await interaction.response.send_message(
@@ -1228,7 +1283,7 @@ async def _create_ticket_from_triage(*, interaction: discord.Interaction,
             color=TC_PRIMARY, timestamp=discord.utils.utcnow(),
         )
         emb.set_thumbnail(url=user.display_avatar.url)
-        await ch.send(content=ping, embed=emb, view=TicketActionRow())
+        await ch.send(content=ping, embed=emb, view=TicketFallbackActionsView())
 
     # Subject as a separate quoted message for staff scanability
     try:
@@ -1729,6 +1784,13 @@ class Tickets(commands.GroupCog, name="ticket"):
         # Persistent views must be re-registered each startup
         try:
             bot.add_view(TicketPanelView())
+        except Exception:
+            pass
+        try:
+            # Register the legacy-fallback action view too, so its buttons
+            # keep working after a bot restart on tickets that landed in
+            # the V2-failure fallback path.
+            bot.add_view(TicketFallbackActionsView())
         except Exception:
             pass
         try:
